@@ -9,7 +9,7 @@ import { DirectoryLoader } from 'langchain/document_loaders';
 import { DocxLoader } from 'langchain/document_loaders/fs/docx';
 
 /* Name of directory to retrieve your files from */
-const filePath = 'docs/With Timestamps';
+const filePath = 'docs';
 
 export const run = async () => {
   try {

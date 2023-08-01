@@ -7,22 +7,19 @@ import { fetchEventSource } from '@microsoft/fetch-event-source';
 import Image from 'next/image';
 import ReactMarkdown from 'react-markdown';
 import LoadingDots from '@/components/ui/LoadingDots';
-import { Document } from 'langchain/document';
 import {
   Accordion,
   AccordionContent,
   AccordionItem,
   AccordionTrigger,
 } from '@/components/ui/accordion';
-import { MBTLink, SourceScore } from './api/evaluate_source';
 import PubNub from 'pubnub';
+import { Document } from 'langchain/document';
 
 export default function Home() {
   const [query, setQuery] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
-  const [evaluatingSources, setEvaluatingSources] = useState<boolean>(false);
   const [fetchingSummary, setFetchingSummary] = useState<boolean>(false);
-  const [sourceDocs, setSourceDocs] = useState<Document[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [queue, setQueue] = useState<{ [key: number]: any }>({});
   const [lastProcessedId, setLastProcessedId] = useState(0);
@@ -31,30 +28,26 @@ export default function Home() {
   const [messageState, setMessageState] = useState<{
     messages: Message[];
     pending?: string;
+    pendingSourceDocs?: Document[];
     history: [string, string][];
     chatSummary: string;
-    pendingSourceDocs?: Document[];
   }>({
     messages: [
       {
-        message: 'Hi, what MBT related questions do you have?',
+        message: 'Hi, what questions do you have?',
         type: 'apiMessage',
-        sourcesEvaluated: false,
-        sourcesEvaluationPending: false,
       },
     ],
     history: [],
     chatSummary: 'None. This is the beginning of the conversation.',
-    pendingSourceDocs: [],
   });
 
-const MODEL_OPTIONS = {
-  'AI GUY': 'gpt-4',
-  'AI GUY Jr.': 'gpt-3.5-turbo'
-}
+  const MODEL_OPTIONS = {
+    'Bob Bot': 'gpt-4',
+    'Bob Bot Jr.': 'gpt-3.5-turbo',
+  };
 
-  const { messages, pending, history, chatSummary, pendingSourceDocs } =
-    messageState;
+  const { messages, pending, history, chatSummary } = messageState;
 
   const messageListRef = useRef<HTMLDivElement>(null);
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
@@ -147,107 +140,20 @@ const MODEL_OPTIONS = {
   };
 
   const recieveChatData = (data: any) => {
-    // console.log('RECIEE CHAT DATA:', data);
+    console.log('RECIEE CHAT DATA:', data);
     if (data.data === '[DONE MESSAGES]') {
       console.log('WE DONE HERE');
       setDoneMessages(true);
+    } else if (data.sourceDocs) {
+      setMessageState((state) => ({
+        ...state,
+        pendingSourceDocs: data.sourceDocs,
+      }));
     } else {
       setMessageState((state) => ({
         ...state,
         pending: (state.pending ?? '') + data.data,
       }));
-    }
-  };
-
-  const fetchEval = async (userMessage: Message, apiMessage: Message) => {
-    console.log('fetchEval PRE');
-    if (
-      userMessage.type === 'userMessage' &&
-      !apiMessage.sourcesEvaluated &&
-      !apiMessage.sourcesEvaluationPending &&
-      apiMessage.sourceDocs?.length
-    ) {
-      console.log('fetchEval');
-      const source_docs = apiMessage.sourceDocs || [];
-
-      // console.log('SOURCE DOCS:', source_docs.length);
-
-      setMessageState((state) => ({
-        ...state,
-        messages: [
-          ...state.messages.map((m) => {
-            if (
-              m.message === userMessage.message ||
-              m.message === apiMessage.message
-            ) {
-              m.sourcesEvaluationPending = true;
-            }
-            return m;
-          }),
-        ],
-        pending: undefined,
-      }));
-
-      try {
-        setEvaluatingSources(true);
-        const response = await fetch('/api/evaluate_source', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            source_docs,
-            userMessage: userMessage.message,
-            apiMessage: apiMessage.message,
-          }),
-        });
-
-        console.log('RESPONSE:', response);
-
-        if (!response.ok) {
-          throw new Error('Network response was not ok');
-        }
-
-        const data = await response.json();
-        console.log(data);
-
-        // let { source_scores } = JSON.parse(response.data);
-        let { source_scores } = data;
-        console.log('SOURCE SCORES AFTER:', source_scores);
-
-        console.log('STATE MESSAGES:', messageState);
-
-        setMessageState((state) => ({
-          ...state,
-          messages: [
-            ...state.messages.map((m) => {
-              // console.log("M:", m)
-              if (
-                m.message === userMessage.message ||
-                m.message === apiMessage.message
-              ) {
-                if (m.sourceDocs && source_scores?.length) {
-                  // Filter out source docs that have a relevance score less than 5
-                  m.sourceDocs = source_scores
-                    .filter((s: SourceScore) => s.score >= 5)
-                    .map((s: SourceScore) => {
-                      return s.sourceDoc;
-                    });
-                  m.sourcesEvaluated = true;
-                  m.sourcesEvaluationPending = false;
-                  // console.log('M EVALUATED:', m);
-                }
-              }
-              return m;
-            }),
-          ],
-          pending: undefined,
-        }));
-      } catch (error) {
-        console.error('There was a problem with the fetch operation:', error);
-      } finally {
-        setEvaluatingSources(false);
-      }
     }
   };
 
@@ -288,18 +194,6 @@ const MODEL_OPTIONS = {
   };
 
   useEffect(() => {
-    for (const [index, message] of messageState.messages.entries()) {
-      if (
-        index < messageState.messages.length - 1 &&
-        !message.sourcesEvaluationPending
-      ) {
-        fetchEval(
-          messageState.messages[index],
-          messageState.messages[index + 1],
-        );
-      }
-    }
-
     if (messageState.history.length > 1) {
       // grab all but the most recent history entry
       const historyForSummary = messageState.history.slice(
@@ -347,8 +241,6 @@ const MODEL_OPTIONS = {
         {
           type: 'userMessage',
           message: question,
-          sourcesEvaluated: false,
-          sourcesEvaluationPending: false,
         },
       ],
       pending: undefined,
@@ -409,9 +301,7 @@ const MODEL_OPTIONS = {
                     {
                       type: 'apiMessage',
                       message: state.pending ?? '',
-                      sourceDocs: state.pendingSourceDocs,
-                      sourcesEvaluated: false,
-                      sourcesEvaluationPending: false,
+                      sourceDocs: state.pendingSourceDocs
                     },
                   ],
                   pending: undefined,
@@ -424,11 +314,6 @@ const MODEL_OPTIONS = {
               }
               ctrl.abort();
             });
-          } else if (data.sourceDocs) {
-            setMessageState((state) => ({
-              ...state,
-              pendingSourceDocs: data.sourceDocs,
-            }));
           } else if (JSON.stringify(data).includes('ERROR')) {
             console.error('Error: ', data);
             setLoading(false);
@@ -467,14 +352,14 @@ const MODEL_OPTIONS = {
             {
               type: 'apiMessage',
               message: pending,
-              sourceDocs: pendingSourceDocs,
+              sourceDocs: [],
               sourcesEvaluated: false,
               sourcesEvaluationPending: false,
             },
           ]
         : []),
     ];
-  }, [messages, pending, pendingSourceDocs]);
+  }, [messages, pending]);
 
   //scroll to bottom of chat
   useEffect(() => {
@@ -500,7 +385,14 @@ const MODEL_OPTIONS = {
                   className="border p-2 rounded-md"
                 >
                   {Object.keys(MODEL_OPTIONS).map((key) => (
-                    <option key={key} value={MODEL_OPTIONS[key as keyof typeof MODEL_OPTIONS] as string}>
+                    <option
+                      key={key}
+                      value={
+                        MODEL_OPTIONS[
+                          key as keyof typeof MODEL_OPTIONS
+                        ] as string
+                      }
+                    >
                       {key}
                     </option>
                   ))}
@@ -555,78 +447,46 @@ const MODEL_OPTIONS = {
                         </div>
                       </div>
 
-                      {message.sourcesEvaluationPending && (
-                        <div className={styles.loadingwheel}>
-                          <LoadingDots color="#000" />
+                      {message.sourceDocs && (
+                        <div
+                          className="p-5"
+                          key={`sourceDocsAccordion-${index}`}
+                        >
+                          <Accordion
+                            type="single"
+                            collapsible
+                            className="flex-col"
+                          >
+                            {message.sourceDocs.map((doc, index) => (
+                              <div key={`messageSourceDocs-${index}`}>
+                                <AccordionItem value={`item-${index}`}>
+                                  <AccordionTrigger>
+                                    <h3>Source {index + 1}</h3>
+                                  </AccordionTrigger>
+                                  <AccordionContent>
+                                    <ReactMarkdown linkTarget="_blank">
+                                      {doc.pageContent}
+                                    </ReactMarkdown>
+                                    <p className="mt-2">
+                                      <b>Source:</b> {doc.metadata.source}
+                                    </p>
+                                  </AccordionContent>
+                                </AccordionItem>
+                              </div>
+                            ))}
+                          </Accordion>
                         </div>
                       )}
-                      {message.sourcesEvaluated
-                        ? message.sourceDocs && (
-                            <div
-                              className="p-5"
-                              key={`sourceDocsAccordion-${index}`}
-                            >
-                              <Accordion
-                                type="single"
-                                collapsible
-                                className="flex-col"
-                              >
-                                {message.sourceDocs.map((doc, index) => (
-                                  <div key={`messageSourceDocs-${index}`}>
-                                    <AccordionItem value={`item-${index}`}>
-                                      <AccordionTrigger>
-                                        <h3>Source {index + 1}</h3>
-                                      </AccordionTrigger>
-                                      <AccordionContent>
-                                        <ReactMarkdown linkTarget="_blank">
-                                          {`**YouTube link**: [${doc.metadata.ytLink}](${doc.metadata.ytLink})  \n\n  ---  \n\n  ---  \n\n  ---  \n\n` +
-                                            doc.metadata.mbtLinks
-                                              .map(
-                                                (link: MBTLink) =>
-                                                  `**Segment Title**: ${link.title}  \n**Segment Description**: ${link.description}  \n**Segment Link**: [${link.link}](${link.link})`,
-                                              )
-                                              .join(
-                                                '  \n\n  ---  \n\n  ---  \n\n  ---  \n\n',
-                                              )}
-                                        </ReactMarkdown>
-                                      </AccordionContent>
-                                    </AccordionItem>
-                                  </div>
-                                ))}
-                              </Accordion>
-                            </div>
-                          )
-                        : null}
                     </>
                   );
                 })}
-                {sourceDocs.length > 0 && (
-                  <div className="p-5">
-                    <Accordion type="single" collapsible className="flex-col">
-                      {sourceDocs.map((doc, index) => (
-                        <div key={`SourceDocs-${index}`}>
-                          <AccordionItem value={`item-${index}`}>
-                            <AccordionTrigger>
-                              <h3>Source {index + 1}</h3>
-                            </AccordionTrigger>
-                            <AccordionContent>
-                              <ReactMarkdown linkTarget="_blank">
-                                {doc.pageContent}
-                              </ReactMarkdown>
-                            </AccordionContent>
-                          </AccordionItem>
-                        </div>
-                      ))}
-                    </Accordion>
-                  </div>
-                )}
               </div>
             </div>
             <div className={styles.center}>
               <div className={styles.cloudform}>
                 <form onSubmit={handleSubmit}>
                   <textarea
-                    disabled={loading || evaluatingSources || fetchingSummary}
+                    disabled={loading || fetchingSummary}
                     onKeyDown={handleEnter}
                     ref={textAreaRef}
                     autoFocus={false}
@@ -637,8 +497,6 @@ const MODEL_OPTIONS = {
                     placeholder={
                       loading
                         ? 'Waiting for response...'
-                        : evaluatingSources
-                        ? 'Fetching sources...'
                         : fetchingSummary
                         ? 'Processing the conversation...'
                         : "What's on your mind?"
@@ -649,10 +507,10 @@ const MODEL_OPTIONS = {
                   />
                   <button
                     type="submit"
-                    disabled={loading || evaluatingSources || fetchingSummary}
+                    disabled={loading || fetchingSummary}
                     className={styles.generatebutton}
                   >
-                    {loading || evaluatingSources || fetchingSummary ? (
+                    {loading || fetchingSummary ? (
                       <div className={styles.loadingwheel}>
                         <LoadingDots color="#000" />
                       </div>
